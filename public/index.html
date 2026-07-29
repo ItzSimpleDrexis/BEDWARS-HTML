@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BedWars - 起床战争</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="game-container">
+        <!-- 登录界面 -->
+        <div id="login-screen" class="screen">
+            <div class="login-box">
+                <h1>BedWars</h1>
+                <p class="subtitle">起床战争</p>
+                <input type="text" id="player-name" placeholder="输入你的名字" maxlength="12">
+                <button id="start-game" class="btn">开始游戏</button>
+                <div class="game-info">
+                    <p>控制说明:</p>
+                    <ul>
+                        <li>WASD / 箭头键 - 移动</li>
+                        <li>鼠标左键 - 攻击</li>
+                        <li>E - 打开商店</li>
+                        <li>F - 团队指令</li>
+                        <li>R - 重生 (死亡后)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 游戏界面 -->
+        <div id="game-screen" class="screen" style="display: none;">
+            <canvas id="game-canvas"></canvas>
+            
+            <!-- 玩家信息面板 -->
+            <div id="player-info">
+                <div class="health-bar">
+                    <span>生命: </span>
+                    <div class="bar-container">
+                        <div id="health-bar" class="bar health"></div>
+                    </div>
+                    <span id="health-value">100/100</span>
+                </div>
+                <div class="team-info">
+                    <span id="team-name">无队伍</span>
+                </div>
+            </div>
+            
+            <!-- 资源面板 -->
+            <div id="resource-panel">
+                <div class="resource">
+                    <span class="resource-icon iron">🟫</span>
+                    <span id="iron-count">0</span>
+                </div>
+                <div class="resource">
+                    <span class="resource-icon gold">🟡</span>
+                    <span id="gold-count">0</span>
+                </div>
+                <div class="resource">
+                    <span class="resource-icon diamond">🔵</span>
+                    <span id="diamond-count">0</span>
+                </div>
+                <div class="resource">
+                    <span class="resource-icon emerald">🟢</span>
+                    <span id="emerald-count">0</span>
+                </div>
+            </div>
+            
+            <!-- 计时器 -->
+            <div id="game-timer">05:00</div>
+            
+            <!-- 商店界面 -->
+            <div id="shop-modal" class="modal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2>商店</h2>
+                        <button id="close-shop" class="close-btn">&times;</button>
+                    </div>
+                    <div id="shop-items" class="shop-grid">
+                        <!-- 商店物品将通过JS动态添加 -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 团队指令界面 -->
+            <div id="team-command-modal" class="modal">
+                <div class="modal-content small">
+                    <div class="modal-header">
+                        <h2>团队指令 (F)</h2>
+                        <button id="close-command" class="close-btn">&times;</button>
+                    </div>
+                    <div class="command-buttons">
+                        <button class="command-btn" data-command="defend_bed">
+                            <span class="command-icon">🛡️</span>
+                            <span>全员保护床</span>
+                        </button>
+                        <button class="command-btn" data-command="attack">
+                            <span class="command-icon">⚔️</span>
+                            <span>全员出击</span>
+                        </button>
+                        <button class="command-btn" data-command="follow">
+                            <span class="command-icon">👣</span>
+                            <span>跟我走</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 死亡界面 -->
+            <div id="death-screen" class="modal">
+                <div class="modal-content">
+                    <h2>你死了!</h2>
+                    <p>5秒后重生...</p>
+                    <div id="respawn-timer">5</div>
+                    <p>按 R 立即重生 (如果床存在)</p>
+                </div>
+            </div>
+            
+            <!-- 游戏结束界面 -->
+            <div id="game-end-screen" class="modal">
+                <div class="modal-content">
+                    <h2 id="game-result">游戏结束</h2>
+                    <div id="final-scores"></div>
+                    <button id="return-to-lobby" class="btn">返回大厅</button>
+                </div>
+            </div>
+            
+            <!-- 消息提示 -->
+            <div id="message-container">
+                <div id="game-messages"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>

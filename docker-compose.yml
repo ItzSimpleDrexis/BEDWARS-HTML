@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  bedwars:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    container_name: bedwars-server
+
+  # 可选：如果需要在开发模式下运行
+  bedwars-dev:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev
+    container_name: bedwars-dev-server
