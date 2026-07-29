@@ -1,30 +1,28 @@
-// 游戏客户端主逻辑
-class BedWarsGame {
+// 游戏客户端主脚本
+class GameClient {
     constructor() {
         this.socket = null;
         this.canvas = null;
         this.ctx = null;
-        this.player = null;
-        this.gameState = {
-            players: [],
-            teams: [],
-            beds: [],
-            resources: [],
-            shops: [],
-            projectiles: []
-        };
+        this.playerId = null;
+        this.playerName = '';
+        this.gameState = null;
         this.keys = {};
         this.mouse = { x: 0, y: 0 };
-        this.camera = { x: 0, y: 0, zoom: 1 };
         this.lastUpdateTime = 0;
         this.animationFrameId = null;
-        this.selectedShop = null;
-        this.teamCommands = ['defend_bed', 'attack', 'follow'];
+        this.selectedItem = null;
+        this.teamCommandsOpen = false;
+        this.shopOpen = false;
+        this.messageQueue = [];
+        this.damageTexts = [];
+        this.collectEffects = [];
         
-        // 游戏状态
-        this.isDead = false;
-        this.respawnTime = 0;
-        this.gameEnded = false;
+        // 绑定事件
+        this.handleKeyDown = this.handleKeyDown.bind(this);
+        this.handleKeyUp = this.handleKeyUp.bind(this);
+        this.handleMouseMove = this.handleMouseMove.bind(this);
+        this.handleMouseClick = this.handleMouseClick.bind(this);
         
         // 初始化
         this.init();
@@ -33,837 +31,1008 @@ class BedWarsGame {
     init() {
         // 获取DOM元素
         this.canvas = document.getElementById('game-canvas');
-        this.ctx = this.canvas.getContext('2d');
+        if (!this.canvas) {
+            console.error('Canvas element not found');
+            return;
+        }
         
         // 设置画布大小
         this.resizeCanvas();
         window.addEventListener('resize', () => this.resizeCanvas());
         
-        // 绑定事件
-        this.bindEvents();
+        this.ctx = this.canvas.getContext('2d');
         
-        // 连接Socket.io
+        // 连接Socket.IO
         this.connectSocket();
         
-        // 显示登录界面
-        this.showLoginScreen();
+        // 绑定键盘事件
+        window.addEventListener('keydown', this.handleKeyDown);
+        window.addEventListener('keyup', this.handleKeyUp);
+        
+        // 绑定鼠标事件
+        this.canvas.addEventListener('mousemove', this.handleMouseMove);
+        this.canvas.addEventListener('click', this.handleMouseClick);
+        
+        // 绑定按钮事件
+        this.bindUIEvents();
+        
+        // 显示开始界面
+        this.showStartScreen();
     }
     
     resizeCanvas() {
         const container = document.getElementById('game-container');
-        this.canvas.width = container.clientWidth;
-        this.canvas.height = container.clientHeight;
-    }
-    
-    bindEvents() {
-        // 键盘事件
-        document.addEventListener('keydown', (e) => {
-            this.keys[e.code] = true;
-            
-            // 处理特殊按键
-            if (e.code === 'KeyE') {
-                this.toggleShop();
-            }
-            
-            if (e.code === 'KeyF') {
-                this.openTeamCommands();
-            }
-            
-            if (e.code === 'KeyR' && this.isDead) {
-                this.requestRespawn();
-            }
-        });
-        
-        document.addEventListener('keyup', (e) => {
-            this.keys[e.code] = false;
-        });
-        
-        // 鼠标事件
-        this.canvas.addEventListener('mousemove', (e) => {
-            const rect = this.canvas.getBoundingClientRect();
-            this.mouse.x = e.clientX - rect.left;
-            this.mouse.y = e.clientY - rect.top;
-        });
-        
-        this.canvas.addEventListener('click', (e) => {
-            this.handleCanvasClick(e);
-        });
-        
-        // 登录按钮
-        document.getElementById('start-game').addEventListener('click', () => {
-            this.startGame();
-        });
-        
-        // 关闭商店
-        document.getElementById('close-shop').addEventListener('click', () => {
-            this.closeShop();
-        });
-        
-        // 关闭指令界面
-        document.getElementById('close-command').addEventListener('click', () => {
-            this.closeTeamCommands();
-        });
-        
-        // 团队指令按钮
-        document.querySelectorAll('.command-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const command = btn.dataset.command;
-                this.sendTeamCommand(command);
-                this.closeTeamCommands();
-            });
-        });
-        
-        // 返回大厅
-        document.getElementById('return-to-lobby').addEventListener('click', () => {
-            this.returnToLobby();
-        });
+        if (container) {
+            this.canvas.width = Math.min(window.innerWidth - 40, 800);
+            this.canvas.height = Math.min(window.innerHeight - 40, 600);
+        } else {
+            this.canvas.width = Math.min(window.innerWidth - 40, 800);
+            this.canvas.height = Math.min(window.innerHeight - 40, 600);
+        }
     }
     
     connectSocket() {
-        this.socket = io();
+        // 连接到本地服务器
+        this.socket = io(window.location.origin);
         
         // 连接事件
         this.socket.on('connect', () => {
             console.log('Connected to server');
         });
         
-        // 玩家加入
-        this.socket.on('player_joined', (data) => {
-            this.player = { id: data.playerId };
+        this.socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            this.showMessage('与服务器断开连接，正在重连...');
         });
         
         // 游戏状态更新
-        this.socket.on('game_update', (gameState) => {
-            this.gameState = gameState;
-            this.updatePlayerState();
+        this.socket.on('gameState', (state) => {
+            this.gameState = state;
+            this.updatePlayerInfo();
+            this.updateResourceDisplay();
         });
         
-        // 攻击结果
-        this.socket.on('attack_result', (data) => {
-            this.showMessage(`击中目标，造成 ${data.damage} 点伤害!`, 'kill');
+        this.socket.on('gameUpdate', (state) => {
+            this.gameState = state;
+            this.updatePlayerInfo();
+            this.updateResourceDisplay();
         });
         
-        // 资源收集
-        this.socket.on('resource_collected', (data) => {
-            this.showMessage(`收集了 ${data.value} ${this.getResourceName(data.type)}`, 'resource');
+        // 玩家ID
+        this.socket.on('playerId', (data) => {
+            this.playerId = data.id;
+            this.playerName = data.name;
+            console.log('Received player ID:', this.playerId);
+        });
+        
+        // 玩家加入
+        this.socket.on('playerJoined', (data) => {
+            this.showMessage(`${data.name} 加入了游戏`);
+            this.updatePlayerCount();
+        });
+        
+        // 玩家离开
+        this.socket.on('playerLeft', (data) => {
+            this.showMessage(`玩家 ${data.id} 离开游戏`);
+            this.updatePlayerCount();
+        });
+        
+        // 玩家移动
+        this.socket.on('playerMoved', (data) => {
+            // 更新其他玩家的位置
+            if (this.gameState && this.gameState.players) {
+                const player = this.gameState.players.find(p => p.id === data.id);
+                if (player) {
+                    player.x = data.x;
+                    player.y = data.y;
+                    player.direction = data.direction || player.direction;
+                }
+            }
+        });
+        
+        // 玩家攻击
+        this.socket.on('playerAttacked', (data) => {
+            this.showDamageText(data.targetId, data.damage);
+        });
+        
+        // 资源被收集
+        this.socket.on('resourceCollected', (data) => {
+            this.showCollectEffect(data.resourceId, data.playerId);
         });
         
         // 物品购买
-        this.socket.on('item_purchased', (data) => {
-            this.showMessage(`购买了 ${data.itemName}`, 'resource');
+        this.socket.on('itemPurchased', (data) => {
+            this.showMessage(`购买了 ${this.getItemName(data.itemId)}`);
         });
         
-        // 购买失败
-        this.socket.on('buy_failed', (data) => {
-            this.showMessage(data.message, 'team');
+        this.socket.on('purchaseFailed', (data) => {
+            this.showMessage(`购买失败: ${data.reason}`);
         });
         
-        // 床受损
-        this.socket.on('bed_damaged', (data) => {
-            if (data.destroyed) {
-                this.showMessage('敌人的床被破坏了!', 'kill');
-            }
+        // 团队指令
+        this.socket.on('teamCommandExecuted', (data) => {
+            const commandText = this.getCommandText(data.commandType);
+            this.showMessage(`${this.getPlayerName(data.playerId)} 发出指令: ${commandText}`);
         });
         
-        // 团队指令接收
-        this.socket.on('team_command_received', (data) => {
-            this.showMessage(`${data.playerName} 发出指令: ${this.getCommandName(data.command)}`, 'team');
+        this.socket.on('openTeamCommands', () => {
+            this.toggleTeamCommands();
         });
         
-        // 游戏结束
-        this.socket.on('game_end', (data) => {
-            this.gameEnded = true;
-            this.showGameEndScreen(data.winner);
+        // 床被破坏
+        this.socket.on('bedDestroyed', (data) => {
+            this.showMessage(`⚠️ ${this.getTeamName(data.teamId)} 的床被破坏了!`);
+        });
+        
+        // 床受到伤害
+        this.socket.on('bedDamaged', (data) => {
+            // 可以显示床的血量变化
+        });
+        
+        // 投掷物创建
+        this.socket.on('projectileCreated', (data) => {
+            // 投掷物将在游戏状态中更新
+        });
+        
+        // 投掷物命中
+        this.socket.on('projectileHit', (data) => {
+            this.showDamageText(data.targetId, data.damage);
+        });
+        
+        // 游戏开始
+        this.socket.on('gameStarted', () => {
+            this.hideWaitingScreen();
         });
     }
     
-    showLoginScreen() {
-        document.getElementById('login-screen').style.display = 'flex';
-        document.getElementById('game-screen').style.display = 'none';
-    }
-    
-    showGameScreen() {
-        document.getElementById('login-screen').style.display = 'none';
-        document.getElementById('game-screen').style.display = 'block';
-    }
-    
-    startGame() {
-        const playerName = document.getElementById('player-name').value.trim();
-        if (!playerName) {
-            alert('请输入你的名字');
-            return;
-        }
-        
-        this.socket.emit('join_game', { name: playerName });
-        this.showGameScreen();
-        
-        // 开始游戏循环
-        this.lastUpdateTime = performance.now();
-        this.gameLoop();
-    }
-    
-    returnToLobby() {
-        this.gameEnded = false;
-        this.isDead = false;
-        this.gameState = {
-            players: [],
-            teams: [],
-            beds: [],
-            resources: [],
-            shops: [],
-            projectiles: []
-        };
-        
-        // 重置UI
-        document.getElementById('death-screen').classList.remove('active');
-        document.getElementById('game-end-screen').classList.remove('active');
-        document.getElementById('shop-modal').classList.remove('active');
-        document.getElementById('team-command-modal').classList.remove('active');
-        
-        this.showLoginScreen();
-        
-        // 取消游戏循环
-        if (this.animationFrameId) {
-            cancelAnimationFrame(this.animationFrameId);
-            this.animationFrameId = null;
-        }
-    }
-    
-    gameLoop() {
-        const now = performance.now();
-        const deltaTime = (now - this.lastUpdateTime) / 1000;
-        this.lastUpdateTime = now;
-        
-        // 更新游戏状态
-        this.update(deltaTime);
-        
-        // 渲染
-        this.render();
-        
-        // 继续循环
-        if (!this.gameEnded) {
-            this.animationFrameId = requestAnimationFrame(() => this.gameLoop());
-        }
-    }
-    
-    update(deltaTime) {
-        if (!this.player || this.gameEnded) return;
-        
-        // 处理玩家移动
-        this.handlePlayerMovement(deltaTime);
-        
-        // 更新相机
-        this.updateCamera();
-        
-        // 检查死亡状态
-        this.checkDeathStatus();
-        
-        // 更新UI
-        this.updateUI();
-    }
-    
-    handlePlayerMovement(deltaTime) {
-        if (this.isDead) return;
-        
-        const player = this.gameState.players.find(p => p.id === this.socket.id);
-        if (!player || !player.isAlive) return;
-        
-        const speed = 5;
-        let moveX = 0;
-        let moveY = 0;
-        
-        // WASD 或 箭头键
-        if (this.keys['KeyW'] || this.keys['ArrowUp']) moveY -= speed;
-        if (this.keys['KeyS'] || this.keys['ArrowDown']) moveY += speed;
-        if (this.keys['KeyA'] || this.keys['ArrowLeft']) moveX -= speed;
-        if (this.keys['KeyD'] || this.keys['ArrowRight']) moveX += speed;
-        
-        // 归一化移动向量
-        const length = Math.sqrt(moveX * moveX + moveY * moveY);
-        if (length > 0) {
-            moveX = (moveX / length) * speed;
-            moveY = (moveY / length) * speed;
-        }
-        
-        // 计算新位置
-        const newX = player.x + moveX * deltaTime * 60;
-        const newY = player.y + moveY * deltaTime * 60;
-        
-        // 发送移动数据到服务器
-        if (moveX !== 0 || moveY !== 0) {
-            this.socket.emit('player_move', {
-                x: newX,
-                y: newY
+    bindUIEvents() {
+        // 开始游戏按钮
+        const startBtn = document.getElementById('start-game');
+        if (startBtn) {
+            startBtn.addEventListener('click', () => {
+                const nameInput = document.getElementById('player-name-input');
+                const teamSelect = document.getElementById('team-select');
+                
+                const playerName = nameInput.value.trim() || `Player_${Math.floor(Math.random() * 1000)}`;
+                const teamId = teamSelect.value;
+                
+                this.playerName = playerName;
+                
+                // 发送加入游戏请求
+                this.socket.emit('joinGame', { 
+                    name: playerName,
+                    teamId: teamId || null
+                });
+                
+                // 隐藏开始界面
+                this.hideStartScreen();
+                
+                // 显示等待界面
+                this.showWaitingScreen();
             });
         }
-    }
-    
-    updateCamera() {
-        const player = this.gameState.players.find(p => p.id === this.socket.id);
-        if (player) {
-            this.camera.x = player.x - this.canvas.width / 2 / this.camera.zoom;
-            this.camera.y = player.y - this.canvas.height / 2 / this.camera.zoom;
-        }
-    }
-    
-    checkDeathStatus() {
-        const player = this.gameState.players.find(p => p.id === this.socket.id);
-        if (player && !player.isAlive) {
-            this.isDead = true;
-            document.getElementById('death-screen').classList.add('active');
-        } else if (this.isDead) {
-            this.isDead = false;
-            document.getElementById('death-screen').classList.remove('active');
-        }
-    }
-    
-    updatePlayerState() {
-        const player = this.gameState.players.find(p => p.id === this.socket.id);
-        if (player) {
-            this.player = player;
-            
-            // 更新生命值
-            const healthPercent = (player.health / player.maxHealth) * 100;
-            document.getElementById('health-bar').style.width = `${healthPercent}%`;
-            document.getElementById('health-value').textContent = `${player.health}/${player.maxHealth}`;
-            
-            // 更新资源
-            document.getElementById('iron-count').textContent = player.inventory.iron;
-            document.getElementById('gold-count').textContent = player.inventory.gold;
-            document.getElementById('diamond-count').textContent = player.inventory.diamond;
-            document.getElementById('emerald-count').textContent = player.inventory.emerald;
-            
-            // 更新队伍信息
-            const team = this.gameState.teams.find(t => t.id === player.teamId);
-            if (team) {
-                document.getElementById('team-name').textContent = team.name;
-                document.getElementById('team-name').className = `team-${team.color}`;
-            }
-        }
-    }
-    
-    updateUI() {
-        // 更新计时器
-        const timeRemaining = this.gameState.timeRemaining || 300;
-        const minutes = Math.floor(timeRemaining / 60);
-        const seconds = Math.floor(timeRemaining % 60);
-        document.getElementById('game-timer').textContent = 
-            `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
         
-        // 更新重生计时器
-        if (this.isDead) {
-            const respawnTime = this.gameState.players.find(p => p.id === this.socket.id)?.respawnTime;
-            if (respawnTime) {
-                const timeLeft = Math.max(0, (respawnTime - Date.now()) / 1000);
-                document.getElementById('respawn-timer').textContent = Math.ceil(timeLeft);
-            }
-        }
-    }
-    
-    render() {
-        // 清空画布
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        
-        // 保存上下文
-        this.ctx.save();
-        
-        // 应用相机变换
-        this.ctx.translate(-this.camera.x * this.camera.zoom, -this.camera.y * this.camera.zoom);
-        this.ctx.scale(this.camera.zoom, this.camera.zoom);
-        
-        // 绘制游戏地图
-        this.drawMap();
-        
-        // 绘制资源
-        this.drawResources();
-        
-        // 绘制床
-        this.drawBeds();
-        
-        // 绘制商店
-        this.drawShops();
-        
-        // 绘制玩家
-        this.drawPlayers();
-        
-        // 恢复上下文
-        this.ctx.restore();
-        
-        // 绘制UI元素
-        this.drawUI();
-    }
-    
-    drawMap() {
-        // 绘制背景网格
-        const gridSize = 20;
-        const width = this.canvas.width / this.camera.zoom;
-        const height = this.canvas.height / this.camera.zoom;
-        
-        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-        this.ctx.lineWidth = 1;
-        
-        for (let x = 0; x < width; x += gridSize) {
-            this.ctx.beginPath();
-            this.ctx.moveTo(x, 0);
-            this.ctx.lineTo(x, height);
-            this.ctx.stroke();
+        // 添加AI玩家按钮
+        const addAiBtn = document.getElementById('add-ai');
+        if (addAiBtn) {
+            addAiBtn.addEventListener('click', () => {
+                // 向服务器请求添加AI玩家
+                this.socket.emit('addAI');
+            });
         }
         
-        for (let y = 0; y < height; y += gridSize) {
-            this.ctx.beginPath();
-            this.ctx.moveTo(0, y);
-            this.ctx.lineTo(width, y);
-            this.ctx.stroke();
+        // 重新开始按钮
+        const restartBtn = document.getElementById('restart-game');
+        if (restartBtn) {
+            restartBtn.addEventListener('click', () => {
+                window.location.reload();
+            });
         }
         
-        // 绘制边界
-        this.ctx.strokeStyle = '#4a4a6a';
-        this.ctx.lineWidth = 3;
-        this.ctx.strokeRect(0, 0, 100, 100);
-    }
-    
-    drawResources() {
-        this.gameState.resources.forEach(resource => {
-            const x = resource.x;
-            const y = resource.y;
-            
-            // 根据资源类型选择颜色
-            let color, icon;
-            switch(resource.type) {
-                case 'iron':
-                    color = '#a0a0a0';
-                    icon = '🟫';
-                    break;
-                case 'gold':
-                    color = '#ffd700';
-                    icon = '🟡';
-                    break;
-                case 'diamond':
-                    color = '#00bfff';
-                    icon = '🔵';
-                    break;
-                case 'emerald':
-                    color = '#50c878';
-                    icon = '🟢';
-                    break;
-                default:
-                    color = '#ffffff';
-                    icon = '?';
-            }
-            
-            // 绘制资源
-            this.ctx.fillStyle = color;
-            this.ctx.beginPath();
-            this.ctx.arc(x, y, 8, 0, Math.PI * 2);
-            this.ctx.fill();
-            
-            this.ctx.strokeStyle = '#000';
-            this.ctx.lineWidth = 2;
-            this.ctx.stroke();
-            
-            // 绘制图标
-            this.ctx.font = '12px Arial';
-            this.ctx.textAlign = 'center';
-            this.ctx.textBaseline = 'middle';
-            this.ctx.fillText(icon, x, y);
+        // 关闭商店按钮
+        const closeShopBtn = document.getElementById('close-shop');
+        if (closeShopBtn) {
+            closeShopBtn.addEventListener('click', () => {
+                this.toggleShop();
+            });
+        }
+        
+        // 商店标签切换
+        const shopTabs = document.querySelectorAll('.shop-tab');
+        shopTabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                shopTabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                this.updateShopItems(tab.dataset.category);
+            });
+        });
+        
+        // 团队指令按钮
+        const commandBtns = document.querySelectorAll('.command-btn');
+        commandBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const commandType = btn.dataset.command;
+                this.socket.emit('selectTeamCommand', { commandType });
+                this.toggleTeamCommands();
+            });
         });
     }
     
-    drawBeds() {
-        this.gameState.beds.forEach(bed => {
-            const team = this.gameState.teams.find(t => t.id === bed.teamId);
-            if (!team) return;
-            
-            const x = bed.x;
-            const y = bed.y;
-            const size = 15;
-            
-            // 绘制床
-            this.ctx.fillStyle = team.color;
-            this.ctx.fillRect(x - size/2, y - size/2, size, size);
-            
-            // 绘制床的健康值
-            this.ctx.strokeStyle = '#000';
-            this.ctx.lineWidth = 2;
-            this.ctx.strokeRect(x - size/2, y - size/2, size, size);
-            
-            // 绘制健康条
-            const healthPercent = bed.health / bed.maxHealth;
-            this.ctx.fillStyle = healthPercent > 0.5 ? '#4caf50' : healthPercent > 0.25 ? '#ffeb3b' : '#ff4757';
-            this.ctx.fillRect(x - size/2, y - size/2 - 5, size * healthPercent, 3);
-            
-            // 如果床被破坏
-            if (bed.health <= 0) {
-                this.ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
-                this.ctx.fillRect(x - size/2, y - size/2, size, size);
-                this.ctx.strokeStyle = '#ff0000';
-                this.ctx.lineWidth = 3;
-                this.ctx.strokeRect(x - size/2, y - size/2, size, size);
-            }
-        });
+    handleKeyDown(e) {
+        this.keys[e.key] = true;
+        
+        // 处理特殊按键
+        switch (e.key) {
+            case ' ':
+                this.handleAttack();
+                break;
+            case 'e':
+            case 'E':
+                this.toggleShop();
+                break;
+            case 'f':
+            case 'F':
+                this.toggleTeamCommands();
+                break;
+            case 'Escape':
+                if (this.shopOpen) {
+                    this.toggleShop();
+                }
+                if (this.teamCommandsOpen) {
+                    this.toggleTeamCommands();
+                }
+                break;
+        }
+        
+        // 发送按键事件到服务器
+        this.socket.emit('keyPress', { key: e.key });
     }
     
-    drawShops() {
-        this.gameState.shops.forEach(shop => {
-            const team = this.gameState.teams.find(t => t.id === shop.teamId);
-            if (!team) return;
-            
-            const x = shop.x;
-            const y = shop.y;
-            const size = 12;
-            
-            // 绘制商店
-            this.ctx.fillStyle = '#8b4513';
-            this.ctx.fillRect(x - size/2, y - size/2, size, size);
-            
-            this.ctx.strokeStyle = '#000';
-            this.ctx.lineWidth = 1;
-            this.ctx.strokeRect(x - size/2, y - size/2, size, size);
-            
-            // 绘制商店图标
-            this.ctx.font = '10px Arial';
-            this.ctx.textAlign = 'center';
-            this.ctx.textBaseline = 'middle';
-            this.ctx.fillText('🏪', x, y);
-        });
+    handleKeyUp(e) {
+        this.keys[e.key] = false;
     }
     
-    drawPlayers() {
-        this.gameState.players.forEach(player => {
-            const team = this.gameState.teams.find(t => t.id === player.teamId);
-            if (!team) return;
-            
-            const x = player.x;
-            const y = player.y;
-            const radius = player.isAI ? 6 : 8;
-            
-            // 绘制玩家
-            this.ctx.fillStyle = team.color;
-            this.ctx.beginPath();
-            this.ctx.arc(x, y, radius, 0, Math.PI * 2);
-            this.ctx.fill();
-            
-            this.ctx.strokeStyle = player.isAlive ? '#fff' : '#ff0000';
-            this.ctx.lineWidth = 2;
-            this.ctx.stroke();
-            
-            // 绘制健康条
-            if (player.isAlive) {
-                const healthPercent = player.health / player.maxHealth;
-                this.ctx.fillStyle = healthPercent > 0.5 ? '#4caf50' : healthPercent > 0.25 ? '#ffeb3b' : '#ff4757';
-                this.ctx.fillRect(x - radius, y - radius - 8, radius * 2 * healthPercent, 3);
-            }
-            
-            // 绘制玩家名称
-            this.ctx.font = player.isAI ? '10px Arial' : '12px Arial';
-            this.ctx.textAlign = 'center';
-            this.ctx.textBaseline = 'top';
-            this.ctx.fillStyle = '#fff';
-            this.ctx.fillText(player.name, x, y - radius - 12);
-            
-            // 如果是AI，显示行为
-            if (player.isAI && player.action) {
-                this.ctx.font = '8px Arial';
-                this.ctx.fillStyle = '#a0a0b0';
-                this.ctx.fillText(this.getActionName(player.action), x, y + radius + 5);
-            }
-            
-            // 如果是当前玩家，绘制光环
-            if (player.id === this.socket.id) {
-                this.ctx.strokeStyle = '#ffd700';
-                this.ctx.lineWidth = 2;
-                this.ctx.beginPath();
-                this.ctx.arc(x, y, radius + 5, 0, Math.PI * 2);
-                this.ctx.stroke();
-            }
-        });
+    handleMouseMove(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        this.mouse.x = e.clientX - rect.left;
+        this.mouse.y = e.clientY - rect.top;
     }
     
-    drawUI() {
-        // 绘制准星
-        const centerX = this.canvas.width / 2;
-        const centerY = this.canvas.height / 2;
-        
-        this.ctx.strokeStyle = '#ffd700';
-        this.ctx.lineWidth = 2;
-        
-        // 水平线
-        this.ctx.beginPath();
-        this.ctx.moveTo(centerX - 15, centerY);
-        this.ctx.lineTo(centerX + 15, centerY);
-        this.ctx.stroke();
-        
-        // 垂直线
-        this.ctx.beginPath();
-        this.ctx.moveTo(centerX, centerY - 15);
-        this.ctx.lineTo(centerX, centerY + 15);
-        this.ctx.stroke();
-    }
-    
-    handleCanvasClick(e) {
-        if (this.isDead || this.gameEnded) return;
-        
+    handleMouseClick(e) {
         const rect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
         
-        // 计算世界坐标
-        const worldX = (mouseX / this.camera.zoom) + this.camera.x;
-        const worldY = (mouseY / this.camera.zoom) + this.camera.y;
-        
-        // 检查是否点击了玩家
-        const clickedPlayer = this.gameState.players.find(p => {
-            const dx = worldX - p.x;
-            const dy = worldY - p.y;
-            return Math.sqrt(dx * dx + dy * dy) < 10;
-        });
-        
-        if (clickedPlayer && clickedPlayer.teamId !== this.player?.teamId && clickedPlayer.isAlive) {
-            // 攻击玩家
-            this.socket.emit('player_attack', {
-                targetId: clickedPlayer.id
-            });
+        // 检查是否点击了资源
+        if (this.gameState && this.gameState.resources) {
+            for (const resource of this.gameState.resources) {
+                if (!resource.collected) {
+                    const distance = Math.sqrt(
+                        Math.pow(mouseX - resource.x, 2) + 
+                        Math.pow(mouseY - resource.y, 2)
+                    );
+                    
+                    if (distance < 20) {
+                        this.socket.emit('collectResource', { resourceId: resource.id });
+                        break;
+                    }
+                }
+            }
         }
         
         // 检查是否点击了床
-        const clickedBed = this.gameState.beds.find(bed => {
-            const dx = worldX - bed.x;
-            const dy = worldY - bed.y;
-            return Math.sqrt(dx * dx + dy * dy) < 15;
-        });
-        
-        if (clickedBed && clickedBed.teamId !== this.player?.teamId) {
-            // 破坏床
-            this.socket.emit('destroy_bed', {
-                bedId: clickedBed.id
-            });
-        }
-        
-        // 检查是否点击了资源
-        const clickedResource = this.gameState.resources.find(resource => {
-            const dx = worldX - resource.x;
-            const dy = worldY - resource.y;
-            return Math.sqrt(dx * dx + dy * dy) < 10;
-        });
-        
-        if (clickedResource) {
-            // 收集资源
-            this.socket.emit('collect_resource', {
-                resourceId: clickedResource.id
-            });
-        }
-        
-        // 检查是否点击了商店
-        const clickedShop = this.gameState.shops.find(shop => {
-            const dx = worldX - shop.x;
-            const dy = worldY - shop.y;
-            return Math.sqrt(dx * dx + dy * dy) < 15;
-        });
-        
-        if (clickedShop && clickedShop.teamId === this.player?.teamId) {
-            this.selectedShop = clickedShop;
-            this.openShop();
-        }
-    }
-    
-    toggleShop() {
-        if (document.getElementById('shop-modal').classList.contains('active')) {
-            this.closeShop();
-        } else {
-            // 检查是否在商店附近
-            const player = this.gameState.players.find(p => p.id === this.socket.id);
-            if (player) {
-                const shop = this.gameState.shops.find(s => s.teamId === player.teamId);
-                if (shop) {
-                    const dx = player.x - shop.x;
-                    const dy = player.y - shop.y;
-                    const distance = Math.sqrt(dx * dx + dy * dy);
-                    
-                    if (distance < 20) {
-                        this.selectedShop = shop;
-                        this.openShop();
-                    } else {
-                        this.showMessage('你需要靠近商店才能购买物品', 'team');
+        if (this.gameState && this.gameState.beds) {
+            for (const bed of this.gameState.beds) {
+                const distance = Math.sqrt(
+                    Math.pow(mouseX - bed.x, 2) + 
+                    Math.pow(mouseY - bed.y, 2)
+                );
+                
+                if (distance < 30) {
+                    // 如果是敌方床，可以攻击
+                    const myPlayer = this.getMyPlayer();
+                    if (myPlayer && myPlayer.teamId !== bed.teamId) {
+                        this.socket.emit('breakBed', { teamId: bed.teamId });
                     }
+                    break;
                 }
             }
         }
     }
     
-    openShop() {
-        if (!this.selectedShop) return;
+    handleAttack() {
+        if (!this.gameState || !this.gameState.players) return;
         
+        const myPlayer = this.getMyPlayer();
+        if (!myPlayer || myPlayer.isDead) return;
+        
+        // 寻找最近的敌人
+        let nearestEnemy = null;
+        let minDistance = Infinity;
+        
+        for (const player of this.gameState.players) {
+            if (player.id !== this.playerId && player.teamId !== myPlayer.teamId && !player.isDead) {
+                const distance = Math.sqrt(
+                    Math.pow(myPlayer.x - player.x, 2) + 
+                    Math.pow(myPlayer.y - player.y, 2)
+                );
+                
+                if (distance < minDistance && distance < 50) {
+                    minDistance = distance;
+                    nearestEnemy = player;
+                }
+            }
+        }
+        
+        if (nearestEnemy) {
+            this.socket.emit('playerAttack', { targetId: nearestEnemy.id });
+        }
+    }
+    
+    toggleShop() {
+        this.shopOpen = !this.shopOpen;
+        const shopPanel = document.getElementById('shop-panel');
+        if (shopPanel) {
+            shopPanel.classList.toggle('hidden', !this.shopOpen);
+        }
+        
+        if (this.shopOpen) {
+            this.updateShopItems('weapons');
+        }
+    }
+    
+    toggleTeamCommands() {
+        this.teamCommandsOpen = !this.teamCommandsOpen;
+        const panel = document.getElementById('team-commands-panel');
+        if (panel) {
+            panel.classList.toggle('hidden', !this.teamCommandsOpen);
+        }
+    }
+    
+    updateShopItems(category) {
         const shopItemsContainer = document.getElementById('shop-items');
+        if (!shopItemsContainer) return;
+        
         shopItemsContainer.innerHTML = '';
         
-        this.selectedShop.items.forEach(item => {
+        const myPlayer = this.getMyPlayer();
+        if (!myPlayer) return;
+        
+        const items = this.getShopItemsByCategory(category);
+        
+        items.forEach(item => {
             const itemElement = document.createElement('div');
             itemElement.className = 'shop-item';
-            itemElement.innerHTML = `
-                <div class="item-icon">${this.getItemIcon(item.id)}</div>
-                <div class="item-name">${item.name}</div>
-                <div class="item-cost">${this.formatCost(item.cost)}</div>
-            `;
             
+            // 检查是否能购买
+            const canAfford = myPlayer.resources['铁锭'] >= (item.cost || 0);
+            if (!canAfford) {
+                itemElement.classList.add('cannot-afford');
+            }
+            
+            // 设置物品数据
+            itemElement.dataset.itemId = item.id;
+            
+            // 物品图标
+            const iconElement = document.createElement('div');
+            iconElement.className = 'item-icon';
+            iconElement.innerHTML = this.getItemIcon(item);
+            
+            // 物品名称
+            const nameElement = document.createElement('div');
+            nameElement.className = 'item-name';
+            nameElement.textContent = item.name;
+            
+            // 物品价格
+            const costElement = document.createElement('div');
+            costElement.className = 'item-cost';
+            costElement.textContent = `🪨 ${item.cost || 0}`;
+            
+            itemElement.appendChild(iconElement);
+            itemElement.appendChild(nameElement);
+            itemElement.appendChild(costElement);
+            
+            // 添加点击事件
             itemElement.addEventListener('click', () => {
-                this.buyItem(item.id);
+                if (canAfford) {
+                    this.socket.emit('buyItem', { itemId: item.id });
+                    this.toggleShop();
+                }
             });
             
             shopItemsContainer.appendChild(itemElement);
         });
+    }
+    
+    getShopItemsByCategory(category) {
+        if (!this.gameState || !this.gameState.shopItems) return [];
         
-        document.getElementById('shop-modal').classList.add('active');
+        return this.gameState.shopItems[category] || [];
     }
     
-    closeShop() {
-        document.getElementById('shop-modal').classList.remove('active');
-        this.selectedShop = null;
-    }
-    
-    buyItem(itemId) {
-        this.socket.emit('buy_item', {
-            itemId: itemId
-        });
-    }
-    
-    openTeamCommands() {
-        document.getElementById('team-command-modal').classList.add('active');
-    }
-    
-    closeTeamCommands() {
-        document.getElementById('team-command-modal').classList.remove('active');
-    }
-    
-    sendTeamCommand(command) {
-        this.socket.emit('team_command', {
-            command: command
-        });
-        this.showMessage(`发送指令: ${this.getCommandName(command)}`, 'team');
-    }
-    
-    requestRespawn() {
-        // 立即重生请求
-        this.socket.emit('player_move', {
-            x: this.player?.x || 0,
-            y: this.player?.y || 0
-        });
-    }
-    
-    showGameEndScreen(winner) {
-        const resultElement = document.getElementById('game-result');
-        const scoresElement = document.getElementById('final-scores');
+    getItemIcon(item) {
+        const icons = {
+            'wood_sword': '⚔️',
+            'stone_sword': '⚔️',
+            'iron_sword': '⚔️',
+            'diamond_sword': '⚔️',
+            'leather_armor': '🛡️',
+            'chainmail_armor': '🛡️',
+            'iron_armor': '🛡️',
+            'diamond_armor': '🛡️',
+            'pickaxe': '⛏️',
+            'axe': '🪓',
+            'shears': '✂️',
+            'wool': '🧶',
+            'wood': '🪵',
+            'stone': '🪨',
+            'obsidian': '⬛',
+            'tnt': '💣',
+            'fireball': '🔥',
+            'bed': '🛏️'
+        };
         
-        if (winner) {
-            const winningTeam = this.gameState.teams.find(t => t.id === winner);
-            if (winningTeam) {
-                resultElement.textContent = `${winningTeam.name} 队伍获胜!`;
-                resultElement.className = 'win';
-            } else {
-                resultElement.textContent = '游戏结束';
-            }
-        } else {
-            resultElement.textContent = '游戏结束';
+        return icons[item.id] || '❓';
+    }
+    
+    getItemName(itemId) {
+        if (!this.gameState || !this.gameState.shopItems) return itemId;
+        
+        for (const category of Object.values(this.gameState.shopItems)) {
+            const item = category.find(i => i.id === itemId);
+            if (item) return item.name;
         }
         
-        // 显示分数
-        scoresElement.innerHTML = '<h3>最终分数</h3>';
-        this.gameState.teams.forEach(team => {
-            const scoreItem = document.createElement('div');
-            scoreItem.className = 'score-item';
-            scoreItem.innerHTML = `
-                <span style="color: ${team.color}">${team.name}</span>
-                <span>${team.score} 分</span>
-            `;
-            scoresElement.appendChild(scoreItem);
-        });
-        
-        document.getElementById('game-end-screen').classList.add('active');
+        return itemId;
     }
     
-    showMessage(message, type = 'default') {
-        const messagesContainer = document.getElementById('game-messages');
-        const messageElement = document.createElement('div');
-        messageElement.className = `message ${type}`;
-        messageElement.textContent = message;
+    getPlayerName(playerId) {
+        if (!this.gameState || !this.gameState.players) return playerId;
         
-        messagesContainer.appendChild(messageElement);
+        const player = this.gameState.players.find(p => p.id === playerId);
+        return player ? player.name : playerId;
+    }
+    
+    getTeamName(teamId) {
+        if (!this.gameState || !this.gameState.teams) return teamId;
         
-        // 限制消息数量
-        while (messagesContainer.children.length > 5) {
-            messagesContainer.removeChild(messagesContainer.firstChild);
+        const team = this.gameState.teams.find(t => t.id === teamId);
+        return team ? `队伍 ${team.id}` : teamId;
+    }
+    
+    getCommandText(commandType) {
+        const commands = {
+            '全员保护床': '🛡️ 全员保护床',
+            '全员出击': '⚔️ 全员出击',
+            '跟我走': '👣 跟我走'
+        };
+        return commands[commandType] || commandType;
+    }
+    
+    getMyPlayer() {
+        if (!this.gameState || !this.gameState.players) return null;
+        return this.gameState.players.find(p => p.id === this.playerId);
+    }
+    
+    updatePlayerInfo() {
+        const myPlayer = this.getMyPlayer();
+        if (!myPlayer) return;
+        
+        // 更新玩家信息
+        const playerNameEl = document.getElementById('player-name');
+        const playerTeamEl = document.getElementById('player-team');
+        const playerHealthEl = document.getElementById('player-health');
+        const playerKillsEl = document.getElementById('player-kills');
+        
+        if (playerNameEl) playerNameEl.textContent = myPlayer.name;
+        if (playerTeamEl) {
+            const team = this.gameState.teams.find(t => t.id === myPlayer.teamId);
+            playerTeamEl.textContent = team ? team.id : '无';
+            playerTeamEl.style.color = team ? team.color : '#fff';
+        }
+        if (playerHealthEl) playerHealthEl.textContent = Math.max(0, myPlayer.health);
+        if (playerKillsEl) playerKillsEl.textContent = myPlayer.kills || 0;
+    }
+    
+    updateResourceDisplay() {
+        const myPlayer = this.getMyPlayer();
+        if (!myPlayer || !myPlayer.resources) return;
+        
+        const resourceIronEl = document.getElementById('resource-iron');
+        const resourceGoldEl = document.getElementById('resource-gold');
+        const resourceDiamondEl = document.getElementById('resource-diamond');
+        const resourceEmeraldEl = document.getElementById('resource-emerald');
+        
+        if (resourceIronEl) resourceIronEl.textContent = myPlayer.resources['铁锭'] || 0;
+        if (resourceGoldEl) resourceGoldEl.textContent = myPlayer.resources['金锭'] || 0;
+        if (resourceDiamondEl) resourceDiamondEl.textContent = myPlayer.resources['钻石'] || 0;
+        if (resourceEmeraldEl) resourceEmeraldEl.textContent = myPlayer.resources['绿宝石'] || 0;
+    }
+    
+    updatePlayerCount() {
+        const currentPlayersEl = document.getElementById('current-players');
+        if (currentPlayersEl && this.gameState) {
+            currentPlayersEl.textContent = this.gameState.players ? this.gameState.players.length : 0;
+        }
+    }
+    
+    showMessage(message) {
+        this.messageQueue.push(message);
+        
+        // 只保留最后5条消息
+        if (this.messageQueue.length > 5) {
+            this.messageQueue.shift();
         }
         
-        // 自动删除消息
+        // 更新击杀通知
+        this.updateKillFeed();
+    }
+    
+    updateKillFeed() {
+        const killFeedEl = document.getElementById('kill-feed');
+        if (!killFeedEl) return;
+        
+        killFeedEl.innerHTML = '';
+        
+        this.messageQueue.forEach((message, index) => {
+            const itemEl = document.createElement('div');
+            itemEl.className = 'kill-feed-item';
+            itemEl.textContent = message;
+            killFeedEl.appendChild(itemEl);
+        });
+    }
+    
+    showDamageText(targetId, damage) {
+        if (!this.gameState || !this.gameState.players) return;
+        
+        const targetPlayer = this.gameState.players.find(p => p.id === targetId);
+        if (!targetPlayer) return;
+        
+        this.damageTexts.push({
+            x: targetPlayer.x,
+            y: targetPlayer.y - 20,
+            text: `-${damage}`,
+            time: Date.now()
+        });
+        
+        // 1秒后移除
         setTimeout(() => {
-            messageElement.remove();
-        }, 5000);
+            this.damageTexts = this.damageTexts.filter(d => d.time !== Date.now());
+        }, 1000);
     }
     
-    getResourceName(type) {
-        const names = {
-            iron: '铁锭',
-            gold: '金锭',
-            diamond: '钻石',
-            emerald: '绿宝石'
-        };
-        return names[type] || type;
+    showCollectEffect(resourceId, playerId) {
+        if (!this.gameState) return;
+        
+        const resource = this.gameState.resources.find(r => r.id === resourceId);
+        if (!resource) return;
+        
+        this.collectEffects.push({
+            x: resource.x,
+            y: resource.y,
+            time: Date.now()
+        });
+        
+        // 0.5秒后移除
+        setTimeout(() => {
+            this.collectEffects = this.collectEffects.filter(c => c.time !== Date.now());
+        }, 500);
     }
     
-    getItemIcon(itemId) {
-        const icons = {
-            sword: '⚔️',
-            bow: '🏹',
-            leather_armor: '👕',
-            iron_armor: '🛡️',
-            gold_armor: '👑',
-            diamond_armor: '✨',
-            block: '⬜',
-            tnt: '💣'
-        };
-        return icons[itemId] || '?';
+    showStartScreen() {
+        const startScreen = document.getElementById('start-screen');
+        const waitingScreen = document.getElementById('waiting-screen');
+        const endScreen = document.getElementById('end-screen');
+        
+        if (startScreen) startScreen.style.display = 'flex';
+        if (waitingScreen) waitingScreen.classList.add('hidden');
+        if (endScreen) endScreen.classList.add('hidden');
     }
     
-    formatCost(cost) {
-        let result = '';
-        for (const [resource, amount] of Object.entries(cost)) {
-            result += `${this.getResourceIcon(resource)}${amount} `;
+    hideStartScreen() {
+        const startScreen = document.getElementById('start-screen');
+        if (startScreen) startScreen.style.display = 'none';
+    }
+    
+    showWaitingScreen() {
+        const waitingScreen = document.getElementById('waiting-screen');
+        if (waitingScreen) waitingScreen.classList.remove('hidden');
+    }
+    
+    hideWaitingScreen() {
+        const waitingScreen = document.getElementById('waiting-screen');
+        if (waitingScreen) waitingScreen.classList.add('hidden');
+    }
+    
+    showEndScreen(winnerTeam) {
+        const endScreen = document.getElementById('end-screen');
+        const winnerText = document.getElementById('winner-text');
+        const winnerDescription = document.getElementById('winner-description');
+        
+        if (endScreen) endScreen.classList.remove('hidden');
+        if (winnerText) {
+            if (winnerTeam) {
+                const team = this.gameState.teams.find(t => t.id === winnerTeam);
+                winnerText.textContent = `🏆 ${team ? team.id : winnerTeam} 获胜!`;
+            } else {
+                winnerText.textContent = '🏆 游戏结束';
+            }
         }
-        return result.trim();
+        
+        if (winnerDescription) {
+            if (winnerTeam) {
+                winnerDescription.textContent = '恭喜获胜队伍!';
+            } else {
+                winnerDescription.textContent = '平局!';
+            }
+        }
     }
     
-    getResourceIcon(type) {
-        const icons = {
-            iron: '🟫',
-            gold: '🟡',
-            diamond: '🔵',
-            emerald: '🟢'
-        };
-        return icons[type] || '?';
+    hideEndScreen() {
+        const endScreen = document.getElementById('end-screen');
+        if (endScreen) endScreen.classList.add('hidden');
     }
     
-    getActionName(action) {
-        const names = {
-            defend: '守卫',
-            attack: '攻击',
-            collect: '收集',
-            follow: '跟随',
-            panic: '慌乱',
-            idle: '待命'
+    // 游戏主循环
+    startGameLoop() {
+        if (this.animationFrameId) {
+            cancelAnimationFrame(this.animationFrameId);
+        }
+        
+        const gameLoop = (timestamp) => {
+            this.update(timestamp);
+            this.render(timestamp);
+            this.animationFrameId = requestAnimationFrame(gameLoop);
         };
-        return names[action] || action;
+        
+        this.animationFrameId = requestAnimationFrame(gameLoop);
     }
     
-    getCommandName(command) {
-        const names = {
-            defend_bed: '全员保护床',
-            attack: '全员出击',
-            follow: '跟我走'
-        };
-        return names[command] || command;
+    update(timestamp) {
+        // 处理玩家移动
+        this.handlePlayerMovement(timestamp);
+        
+        // 更新游戏状态
+        if (this.gameState) {
+            // 检查游戏是否结束
+            if (this.gameState.state === 'ended') {
+                this.showEndScreen(this.gameState.winnerTeam);
+                return;
+            }
+            
+            // 检查游戏是否开始
+            if (this.gameState.state === 'playing') {
+                this.hideWaitingScreen();
+            }
+            
+            // 更新计时器
+            this.updateTimer();
+        }
+    }
+    
+    handlePlayerMovement(timestamp) {
+        if (!this.gameState || !this.gameState.players) return;
+        
+        const myPlayer = this.getMyPlayer();
+        if (!myPlayer || myPlayer.isDead) return;
+        
+        const deltaTime = timestamp - this.lastUpdateTime;
+        this.lastUpdateTime = timestamp;
+        
+        const speed = 2;
+        const moveSpeed = speed * (deltaTime / 16); // 标准化到60fps
+        
+        let dx = 0;
+        let dy = 0;
+        
+        // 处理键盘输入
+        if (this.keys['w'] || this.keys['W'] || this.keys['ArrowUp']) {
+            dy -= moveSpeed;
+        }
+        if (this.keys['s'] || this.keys['S'] || this.keys['ArrowDown']) {
+            dy += moveSpeed;
+        }
+        if (this.keys['a'] || this.keys['A'] || this.keys['ArrowLeft']) {
+            dx -= moveSpeed;
+        }
+        if (this.keys['d'] || this.keys['D'] || this.keys['ArrowRight']) {
+            dx += moveSpeed;
+        }
+        
+        // 计算新位置
+        let newX = myPlayer.x + dx;
+        let newY = myPlayer.y + dy;
+        
+        // 限制在画布边界内
+        newX = Math.max(20, Math.min(this.canvas.width - 20, newX));
+        newY = Math.max(20, Math.min(this.canvas.height - 20, newY));
+        
+        // 计算朝向
+        let direction = myPlayer.direction || 0;
+        if (dx !== 0 || dy !== 0) {
+            direction = Math.atan2(dy, dx);
+        }
+        
+        // 发送移动数据到服务器
+        if (dx !== 0 || dy !== 0) {
+            this.socket.emit('playerMove', {
+                x: newX,
+                y: newY,
+                direction: direction
+            });
+        }
+    }
+    
+    updateTimer() {
+        if (!this.gameState || !this.gameState.startTime) return;
+        
+        const timerEl = document.getElementById('game-timer');
+        if (!timerEl) return;
+        
+        const elapsed = Date.now() - this.gameState.startTime;
+        const remaining = Math.max(0, this.gameState.config.gameDuration - elapsed);
+        
+        const minutes = Math.floor(remaining / 60000);
+        const seconds = Math.floor((remaining % 60000) / 1000);
+        
+        timerEl.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+    
+    render(timestamp) {
+        if (!this.ctx || !this.gameState) return;
+        
+        // 清空画布
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        
+        // 绘制游戏背景
+        this.drawBackground();
+        
+        // 绘制床
+        if (this.gameState.beds) {
+            this.gameState.beds.forEach(bed => this.drawBed(bed));
+        }
+        
+        // 绘制资源
+        if (this.gameState.resources) {
+            this.gameState.resources.forEach(resource => {
+                if (!resource.collected) {
+                    this.drawResource(resource);
+                }
+            });
+        }
+        
+        // 绘制投掷物
+        if (this.gameState.projectiles) {
+            this.gameState.projectiles.forEach(projectile => this.drawProjectile(projectile));
+        }
+        
+        // 绘制玩家
+        if (this.gameState.players) {
+            this.gameState.players.forEach(player => this.drawPlayer(player));
+        }
+        
+        // 绘制伤害数字
+        this.damageTexts.forEach(damage => {
+            this.drawDamageText(damage);
+        });
+        
+        // 绘制收集效果
+        this.collectEffects.forEach(effect => {
+            this.drawCollectEffect(effect);
+        });
+    }
+    
+    drawBackground() {
+        // 绘制渐变背景
+        const gradient = this.ctx.createLinearGradient(0, 0, this.canvas.width, this.canvas.height);
+        gradient.addColorStop(0, '#0a0a15');
+        gradient.addColorStop(1, '#1a1a2e');
+        
+        this.ctx.fillStyle = gradient;
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        
+        // 绘制网格线
+        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        this.ctx.lineWidth = 1;
+        
+        for (let x = 0; x < this.canvas.width; x += 40) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(x, 0);
+            this.ctx.lineTo(x, this.canvas.height);
+            this.ctx.stroke();
+        }
+        
+        for (let y = 0; y < this.canvas.height; y += 40) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, y);
+            this.ctx.lineTo(this.canvas.width, y);
+            this.ctx.stroke();
+        }
+    }
+    
+    drawBed(bed) {
+        const team = this.gameState.teams.find(t => t.id === bed.teamId);
+        const color = team ? team.color : '#888';
+        
+        // 绘制床
+        this.ctx.fillStyle = '#8B4513';
+        this.ctx.fillRect(bed.x - 20, bed.y - 10, 40, 20);
+        
+        // 床头
+        this.ctx.fillStyle = '#A0522D';
+        this.ctx.fillRect(bed.x - 25, bed.y - 15, 50, 10);
+        
+        // 床边框
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(bed.x - 20, bed.y - 10, 40, 20);
+        
+        // 显示床的健康值
+        if (bed.health < bed.maxHealth) {
+            this.ctx.fillStyle = '#ff4444';
+            this.ctx.fillRect(bed.x - 15, bed.y - 25, 30 * (bed.health / bed.maxHealth), 5);
+            this.ctx.strokeStyle = '#fff';
+            this.ctx.lineWidth = 1;
+            this.ctx.strokeRect(bed.x - 15, bed.y - 25, 30, 5);
+        }
+        
+        // 显示队伍标识
+        this.ctx.fillStyle = color;
+        this.ctx.font = '12px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText(bed.teamId, bed.x, bed.y + 25);
+    }
+    
+    drawResource(resource) {
+        const resourceType = this.gameState.resourceTypes[resource.type];
+        if (!resourceType) return;
+        
+        // 绘制资源图标
+        this.ctx.fillStyle = resourceType.color;
+        this.ctx.beginPath();
+        this.ctx.arc(resource.x, resource.y, 10, 0, Math.PI * 2);
+        this.ctx.fill();
+        
+        // 绘制边框
+        this.ctx.strokeStyle = '#fff';
+        this.ctx.lineWidth = 2;
+        this.ctx.stroke();
+        
+        // 绘制资源图标
+        this.ctx.font = '12px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = '#fff';
+        
+        // 使用emoji表示不同资源
+        let icon = '';
+        switch (resource.type) {
+            case 'IRON': icon = '🪨'; break;
+            case 'GOLD': icon = '🟡'; break;
+            case 'DIAMOND': icon = '🔵'; break;
+            case 'EMERALD': icon = '🟢'; break;
+        }
+        
+        this.ctx.fillText(icon, resource.x, resource.y);
+    }
+    
+    drawPlayer(player) {
+        const team = this.gameState.teams.find(t => t.id === player.teamId);
+        const color = team ? team.color : '#888';
+        
+        // 绘制玩家身体
+        this.ctx.fillStyle = color;
+        this.ctx.beginPath();
+        this.ctx.arc(player.x, player.y, 15, 0, Math.PI * 2);
+        this.ctx.fill();
+        
+        // 绘制玩家头部
+        this.ctx.fillStyle = '#FFD7A5';
+        this.ctx.beginPath();
+        this.ctx.arc(player.x, player.y - 5, 8, 0, Math.PI * 2);
+        this.ctx.fill();
+        
+        // 绘制玩家朝向指示
+        if (player.direction) {
+            const arrowX = player.x + Math.cos(player.direction) * 12;
+            const arrowY = player.y + Math.sin(player.direction) * 12;
+            
+            this.ctx.strokeStyle = '#fff';
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.moveTo(player.x, player.y);
+            this.ctx.lineTo(arrowX, arrowY);
+            this.ctx.stroke();
+        }
+        
+        // 绘制健康值
+        if (player.health < player.maxHealth) {
+            const healthWidth = 30 * (player.health / player.maxHealth);
+            this.ctx.fillStyle = '#ff4444';
+            this.ctx.fillRect(player.x - 15, player.y - 25, healthWidth, 5);
+            this.ctx.strokeStyle = '#fff';
+            this.ctx.lineWidth = 1;
+            this.ctx.strokeRect(player.x - 15, player.y - 25, 30, 5);
+        }
+        
+        // 绘制玩家名称
+        this.ctx.font = '10px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillStyle = '#fff';
+        this.ctx.fillText(player.name, player.x, player.y + 25);
+        
+        // 如果是自己，绘制特殊标记
+        if (player.id === this.playerId) {
+            this.ctx.strokeStyle = '#ffd700';
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.arc(player.x, player.y, 18, 0, Math.PI * 2);
+            this.ctx.stroke();
+        }
+        
+        // 如果玩家死亡，绘制墓碑
+        if (player.isDead) {
+            this.ctx.fillStyle = '#333';
+            this.ctx.font = '20px Arial';
+            this.ctx.fillText('⚰️', player.x - 10, player.y - 10);
+        }
+        
+        // 绘制武器
+        if (player.weapon) {
+            const weaponX = player.x + Math.cos(player.direction || 0) * 20;
+            const weaponY = player.y + Math.sin(player.direction || 0) * 20;
+            
+            this.ctx.font = '16px Arial';
+            this.ctx.fillText('⚔️', weaponX, weaponY);
+        }
+    }
+    
+    drawProjectile(projectile) {
+        // 绘制投掷物
+        this.ctx.fillStyle = projectile.type === 'tnt' ? '#ff4444' : '#ff8800';
+        this.ctx.beginPath();
+        this.ctx.arc(projectile.x, projectile.y, 8, 0, Math.PI * 2);
+        this.ctx.fill();
+        
+        this.ctx.strokeStyle = '#fff';
+        this.ctx.lineWidth = 1;
+        this.ctx.stroke();
+        
+        // 绘制投掷物图标
+        this.ctx.font = '10px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = '#fff';
+        this.ctx.fillText(projectile.type === 'tnt' ? '💣' : '🔥', projectile.x, projectile.y);
+    }
+    
+    drawDamageText(damage) {
+        this.ctx.font = '16px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = '#ff4444';
+        this.ctx.fillText(damage.text, damage.x, damage.y);
+    }
+    
+    drawCollectEffect(effect) {
+        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        this.ctx.beginPath();
+        this.ctx.arc(effect.x, effect.y, 10, 0, Math.PI * 2);
+        this.ctx.fill();
     }
 }
 
-// 启动游戏
-document.addEventListener('DOMContentLoaded', () => {
-    window.game = new BedWarsGame();
+// 初始化游戏
+let gameClient;
+
+window.addEventListener('load', () => {
+    gameClient = new GameClient();
+    gameClient.startGameLoop();
+});
+
+// 处理窗口关闭
+window.addEventListener('beforeunload', () => {
+    if (gameClient && gameClient.socket) {
+        gameClient.socket.disconnect();
+    }
 });
